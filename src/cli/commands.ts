@@ -8,6 +8,7 @@ import {
 } from '../calculator/cost-calculator.js';
 import { TableRenderer, renderHeader } from '../output/index.js';
 import { formatDateForDisplay } from '../output/formatters.js';
+import { logError, logInfo, logSuccess } from '../utils/logger.js';
 import { subDays, startOfDay, endOfDay, parseISO, isValid } from 'date-fns';
 
 export function createCLI(): Command {
@@ -40,6 +41,8 @@ export function createCLI(): Command {
     .description('Show daily token usage')
     .option('--since <date>', 'Start date (YYYY-MM-DD or relative: 7days, 1month)')
     .option('--until <date>', 'End date (YYYY-MM-DD)')
+    .option('--dir <path>', 'Filter by directory prefix')
+    .option('--repo <name>', 'Filter by repository name')
     .option('--codex-dir <path>', 'Codex data directory', '~/.codex')
     .action(async (options) => {
       await handleDailyCommand(program.opts(), options);
@@ -128,28 +131,68 @@ async function handleReposCommand(globalOpts: any, options: any) {
 
 async function handleDailyCommand(globalOpts: any, options: any) {
   try {
-    // Get codex directory, default to ~/.codex
+    logInfo('daily_command_started', {
+      since: options.since ?? null,
+      until: options.until ?? null,
+      dir: options.dir ?? null,
+      repo: options.repo ?? null,
+    });
+
     const codexDir = globalOpts.codexDir && globalOpts.codexDir !== '~/.codex' 
       ? globalOpts.codexDir 
       : undefined;
-    
+
     const reader = new SessionReader(codexDir);
     const sessions = reader.readAllSessions();
 
+    logInfo('daily_sessions_loaded', { count: sessions.length });
+
     if (sessions.length === 0) {
+      logInfo('daily_no_sessions');
       console.log('No Codex sessions found.');
       return;
     }
 
     let aggregator = new Aggregator(sessions);
 
-    // Apply date filters
     const dateRange = parseDateRange(options.since, options.until);
     if (dateRange.start || dateRange.end) {
+      logInfo('daily_date_filter_applied', {
+        start: dateRange.start?.toISOString() ?? null,
+        end: dateRange.end?.toISOString() ?? null,
+      });
+
       aggregator = aggregator.filterByDateRange(
         dateRange.start || new Date(0),
         dateRange.end || new Date()
       );
+    }
+
+    if (options.repo) {
+      const repoMap = aggregator.getRepoNameMap();
+      const knownRepoNames = Array.from(repoMap.keys()).sort();
+      const matchCount = repoMap.get(options.repo)?.size ?? 0;
+
+      if (matchCount !== 1) {
+        const detail = matchCount === 0 ? 'No matching repository name.' : 'Repository name is ambiguous.';
+        const knownList = knownRepoNames.length > 0 ? knownRepoNames.join(', ') : 'none';
+
+        console.error(`${detail} Known repo names: ${knownList}`);
+        logError('daily_repo_match_failed', {
+          repo: options.repo,
+          matchCount,
+          knownRepoNames,
+        });
+        return;
+      }
+
+      logInfo('daily_repo_filter_applied', { repo: options.repo });
+      aggregator = aggregator.filterByRepoName(options.repo);
+    }
+
+    if (options.dir) {
+      logInfo('daily_dir_filter_applied', { dir: options.dir });
+      aggregator = aggregator.filterByDirectory(options.dir);
     }
 
     const data = aggregator.aggregate();
@@ -166,7 +209,16 @@ async function handleDailyCommand(globalOpts: any, options: any) {
         json: globalOpts.json,
       })
     );
+
+    logSuccess('daily_report_rendered', {
+      days: datesWithCosts.length,
+      totalTokens,
+      totalCost,
+    });
   } catch (error) {
+    logError('daily_report_failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     console.error('Error generating daily report:', error);
     process.exit(1);
   }

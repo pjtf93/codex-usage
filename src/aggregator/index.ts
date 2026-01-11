@@ -9,6 +9,28 @@ import {
 } from './types.js';
 import { format } from 'date-fns';
 
+export function extractRepoNameFromUrl(repoUrl: string): string | null {
+  if (!repoUrl) {
+    return null;
+  }
+
+  const trimmed = repoUrl.trim().replace(/\/+$/, '');
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalized = trimmed.replace(':', '/');
+  const parts = normalized.split('/');
+  const lastSegment = parts[parts.length - 1];
+
+  if (!lastSegment) {
+    return null;
+  }
+
+  const cleaned = lastSegment.replace(/\.git$/i, '');
+  return cleaned || null;
+}
+
 export class Aggregator {
   private sessions: ParsedSession[];
 
@@ -224,7 +246,7 @@ export class Aggregator {
   filterByDirectory(path: string): Aggregator {
     const normalizedPath = this.normalizePath(path);
     const filteredSessions = this.sessions.filter(session =>
-      this.normalizePath(session.cwd).includes(normalizedPath)
+      this.normalizePath(session.cwd).startsWith(normalizedPath)
     );
 
     return new Aggregator(filteredSessions);
@@ -234,6 +256,42 @@ export class Aggregator {
     const filteredSessions = this.sessions.filter(session =>
       session.events.some(event => event.model === model)
     );
+
+    return new Aggregator(filteredSessions);
+  }
+
+  getRepoNameMap(): Map<string, Set<string>> {
+    const repoMap = new Map<string, Set<string>>();
+
+    for (const session of this.sessions) {
+      if (!session.gitRepo) {
+        continue;
+      }
+
+      const repoName = extractRepoNameFromUrl(session.gitRepo);
+      if (!repoName) {
+        continue;
+      }
+
+      if (!repoMap.has(repoName)) {
+        repoMap.set(repoName, new Set());
+      }
+
+      repoMap.get(repoName)!.add(session.gitRepo);
+    }
+
+    return repoMap;
+  }
+
+  filterByRepoName(repoName: string): Aggregator {
+    const filteredSessions = this.sessions.filter(session => {
+      if (!session.gitRepo) {
+        return false;
+      }
+
+      const extracted = extractRepoNameFromUrl(session.gitRepo);
+      return extracted === repoName;
+    });
 
     return new Aggregator(filteredSessions);
   }
